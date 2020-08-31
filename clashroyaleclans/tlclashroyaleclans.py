@@ -160,8 +160,8 @@ class ClashRoyaleClans(commands.Cog):
 
             embed = discord.Embed(color=0xFAA61A)
             embed.set_author(
-                name="Legend Family Clans",
-                url="http://royaleapi.com/clan/family/legend",
+                name="Threat Level Family Clans",
+                url="http://royaleapi.com/clan/family/threatlevel",
                 icon_url="https://cdn.discordapp.com/attachments/423094817371848716/425389610223271956/legend_logo-trans.png",
             )
 
