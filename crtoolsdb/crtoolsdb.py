@@ -20,6 +20,12 @@ class TagAlreadySaved(Exception):
     pass
 
 
+class TagAlreadyExists(Exception):
+    def __init__(self, user_id, message):
+        self.user_id = user_id
+        self.message = message
+
+
 class MainAlreadySaved(Exception):
     pass
 
@@ -111,15 +117,23 @@ class Tags:
 
     def __init__(self, host, user, password, database):
         # hard coding because it's only us using this rn, future can use shared api key
+        self.host = host
+        self.user = user
+        self.password = password
+        self.database = database
+        self.setupConnection()
+
+    def setupConnection(self):
         self.db = mysql.connector.connect(
-            host=host,
-            user=user,
-            password=password,
-            database=database
+            host=self.host,
+            user=self.user,
+            password=self.password,
+            database=self.database
         )
+        self.db.autocommit = True
 
     def setupDB(self):
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         query = f"""CREATE TABLE IF NOT EXISTS `tags` (
 `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -133,6 +147,14 @@ KEY `idx_tag` (`tag`)
         cursor.execute(query)
         print("Attempting to create the tags table if it does not exist.")
         return
+
+    def getCursor(self):
+        try:
+            self.db.ping(reconnect=True, attempts=3, delay=1)
+        except mysql.connector.Error as err:
+            self.setupConnection()
+        return self.db.cursor()
+
 
     @staticmethod
     def verifyTag(tag):
@@ -161,7 +183,7 @@ KEY `idx_tag` (`tag`)
 
         If the account does not exist / not saved it returns None
         """
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         if self.accountCount(userID) < account or account < 1:
             return None
@@ -179,16 +201,29 @@ KEY `idx_tag` (`tag`)
         1 - Main Account Saved
         2+ - Main Account Saved + Some amount of alts (-1 to get the amount)
         """
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
         query = f"SELECT id from tags WHERE user_id = {userID}"
         cursor.execute(query)
         return len(cursor.fetchall())
+
+    def getTagsForUsers(self, userIDs):
+        tagsByUser = {}
+
+        userString = ",".join([str(userID) for userID in userIDs])
+        query = f"SELECT user_id, tag FROM tags WHERE user_id IN ({userString})"
+
+        cursor = self.getCursor()
+        cursor.execute(query)
+        for row in cursor.fetchall():
+            tagsByUser.setdefault(row[0], [])
+            tagsByUser[row[0]].append(row[1])
+        return tagsByUser
 
     def quickGetAllTags(self, userID):
         tags = []
 
         query = f"SELECT tag FROM tags WHERE user_id = {userID}"
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
         cursor.execute(query)
         for row in cursor.fetchall():
             tags.append(row[0])
@@ -207,13 +242,19 @@ KEY `idx_tag` (`tag`)
 
         Alt's are auto indexed
         """
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         count = self.accountCount(userID)
 
         tag = self.formatTag(tag=tag)
         if not self.verifyTag(tag):
             raise InvalidTag
+
+        existing_user_row = self.getUser(tag)
+        if len(existing_user_row) > 0:
+            raise TagAlreadyExists(existing_user_row[0][0], f"Tag is saved under another user: {existing_user_row[0][0]}")
+
+
         # if not main and count == 0:
         #     raise NoMainSaved
         # if main and count != 0:
@@ -225,13 +266,12 @@ KEY `idx_tag` (`tag`)
 
         query = f"INSERT INTO tags (user_id, tag, account) VALUES ({userID}, '{tag}', {account})"
         cursor.execute(query)
-        self.db.commit()
 
         return account
 
     def unlinkTag(self, userID, tag=None, account=None):
         """You can choose to use tag or account but not both or none"""
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         if (tag is None and account is None) or (tag is not None and account is not None):
             raise TypeError
@@ -262,12 +302,10 @@ KEY `idx_tag` (`tag`)
             query = f"UPDATE tags SET account = {item} WHERE user_id = {userID} AND account = {item + 1}"
             cursor.execute(query)
 
-        self.db.commit()
-
     def switchPlace(self, userID, account1, account2):
         """Switch the place of account 1 with 2"""
 
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         count = self.accountCount(userID)
 
@@ -281,8 +319,6 @@ KEY `idx_tag` (`tag`)
         cursor.execute(queryb)
         cursor.execute(queryc)
 
-        self.db.commit()
-
     def getUser(self, tag):
         """Get all users that have this tag, returns dict in list
 
@@ -291,7 +327,7 @@ KEY `idx_tag` (`tag`)
         ]
         """
 
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
 
         tag = self.formatTag(tag=tag)
         if not self.verifyTag(tag):
@@ -307,10 +343,9 @@ KEY `idx_tag` (`tag`)
         if self.accountCount(newUserID) != 0:
             raise MainAlreadySaved
 
-        cursor = self.db.cursor()
+        cursor = self.getCursor()
         query = f"UPDATE tags SET user_id = {newUserID} WHERE user_id = {oldUserID}"
         cursor.execute(query)
-        self.db.commit()
 
 
 class ClashRoyaleTools(commands.Cog):
@@ -396,6 +431,16 @@ class ClashRoyaleTools(commands.Cog):
             return
         except TagAlreadySaved:
             await ctx.send("That tag has already been saved under this account")
+            return
+        except TagAlreadyExists as e:
+            user = self.bot.get_user(e.user_id)
+            embed=discord.Embed(title="Error", description=f"Tag is saved under another user: {user.mention}", color=0xff0000)
+            await ctx.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True, roles=False
+                )
+            )
             return
         except Exception as e:
             await ctx.send("Unknown Error Occurred. Please report this bug with : ```{}```".format(str(e)))

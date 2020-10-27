@@ -334,7 +334,7 @@ class ClashRoyaleClans(commands.Cog):
         self.last_updated = datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
     @commands.command(name="clanaudit")
-    async def clanaudit(self, ctx, nickname: str):
+    async def clanaudit(self, ctx, nickname: str, mentions: int = 0):
         async with ctx.channel.typing():
             clan_info = self.get_clan_by_nickname(nickname)
             if clan_info is None:
@@ -347,36 +347,46 @@ class ClashRoyaleClans(commands.Cog):
 
             # List of all clan member tags from ClashRoyalAPI
             clan_member_by_name_by_tags = await self.get_clan_members(clan_tag)
-            print("Clan Member Tags: {}".format(clan_member_by_name_by_tags))
+            if clan_member_by_name_by_tags is None:
+                return await ctx.send(
+                    "Clan data not found. Use `{}refresh` to get clan data.".format(ctx.prefix)
+                )
 
             # Obtain all members with the clanrole
             role = discord.utils.get(ctx.guild.roles, name=clan_role)
-            print(f"Members w/ {clan_role} role: {role.members}")
 
             unknown_members = [] # People w/ role and no tags
             orphan_members = [] # People w/ role and have a tag and can't be found in the ClashRoyalAPI
             absent_names = [] # Tags (URLS?) of people who aren't in Discord
-            for member in role.members:
-                member_tags = self.tags.quickGetAllTags(member.id)
-                if len(member_tags) == 0:
-                    unknown_members.append(member.mention)
 
-                print(f"{member.display_name} found tags: {member_tags}")
+            # get the list of member id's
+            tags_by_member_id = self.tags.getTagsForUsers([member.id for member in role.members])
+
+            for member in role.members:
+                member_tags = tags_by_member_id.get(member.id, [])
+                if len(member_tags) == 0:
+                    if mentions == 1:
+                        unknown_members.append(member.mention)
+                    else:
+                        unknown_members.append(member.display_name)
+
                 found = False
                 for tag in member_tags:
                     if tag in clan_member_by_name_by_tags:
                         found = True
                         break
                 if not found:
-                    orphan_members.append(member.mention)
-                    print(f"{member} was not found in the clan: {clan_info['name']}.")
+                    if mentions == 1:
+                        orphan_members.append(member.mention)
+                    else:
+                        orphan_members.append(member.display_name)
 
             for tag,name in clan_member_by_name_by_tags.items():
                 if len(self.tags.getUser(tag)) == 0:
                     absent_names.append(f"{name}")
 
             if len(unknown_members) == 0:
-                unknown_members_str = 'None'
+                unknown_members_str = ':white_check_mark:'
                 unknown_count = 0
             else:
                 unknown_members.sort(key=str.lower)
@@ -384,7 +394,7 @@ class ClashRoyaleClans(commands.Cog):
                 unknown_count = len(unknown_members)
 
             if len(orphan_members) == 0:
-                orphan_members_str = 'None'
+                orphan_members_str = ':white_check_mark:'
                 orphan_count = 0
             else:
                 orphan_members.sort(key=str.lower)
@@ -392,7 +402,7 @@ class ClashRoyaleClans(commands.Cog):
                 orphan_count = len(orphan_members)
 
             if len(absent_names) == 0:
-                absent_names_str = 'None'
+                absent_names_str = ':white_check_mark:'
                 absent_count = 0
             else:
                 absent_names.sort(key=str.lower)
@@ -400,16 +410,17 @@ class ClashRoyaleClans(commands.Cog):
                 absent_names_str = absent_names_str[:1024] # max length allowed for discord
                 absent_count = len(absent_names)
 
-            embed=discord.Embed(title=f"Clan Audit: {clan_info['name']}", color=0x00ff00)
+            embed=discord.Embed(title=f"Clan Audit: {clan_info['name']}", color=discord.Colour.blue())
+            embed.add_field(name=f"({len(role.members)}) Players with **{clan_role}** role", value=":heart:", inline=False)
             embed.add_field(name=f"({unknown_count}) Players with **{clan_role}** role, but have **NO** tags saved", value=unknown_members_str, inline=False)
             embed.add_field(name=f"({orphan_count}) Players with **{clan_role}** role, but have **NOT** joined the clan", value=orphan_members_str, inline=False)
             embed.add_field(name=f"({absent_count}) Players in **{clan_info['name']}**, but have **NOT** joined discord", value=absent_names_str, inline=False)
 
-            await ctx.channel.send(
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(
-                    users=True, roles=True
-                ))
+        await ctx.channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(
+                users=True, roles=True
+            ))
 
     def get_clan_by_nickname(self, nickname: str):
         for name, data in self.family_clans.items():
@@ -419,10 +430,24 @@ class ClashRoyaleClans(commands.Cog):
 
     async def get_clan_members(self, clan_tag: str):
         members_names_by_tag = {}
-        clan_members = await self.clash.get_clan_members(clan_tag)
-        async for member in clan_members:
+
+        clan_data = await self.get_clandata_by_tag(clan_tag)
+        if clan_data is None:
+            # We don't have the data yet.
+            return None
+        for member in clan_data["member_list"]:
             members_names_by_tag[member["tag"].strip('#')] = member["name"]
         return members_names_by_tag
+
+    async def get_clandata_by_tag(self, clan_tag):
+        if clan_tag[0] != '#':
+            clan_tag = "#" + clan_tag
+
+        clans = await self.config.clans()
+        for clan in clans:
+            if clan["tag"] == clan_tag:
+                return clan
+        return None
 
     @commands.command(name="refresh")
     @checks.mod_or_permissions()
